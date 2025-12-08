@@ -9346,14 +9346,15 @@ static void ggml_compute_forward_get_rel_pos_f32(
     const float k_scale = MAX((float)qh / kh, 1.0f);
     const float q_scale = MAX((float)kh / qh, 1.0f);
 
-    float * src0_data = (float *) src0->data;
-    float * dst_data  = (float *) dst->data;
+    const char * src0_d = (const char *) src0->data;
+    char *       dst_d  = (char *)       dst->data;
 
     for (int64_t i2 = 0; i2 < ne2; ++i2) {
         for (int64_t i1 = 0; i1 < ne1; ++i1) {
             const int pos = int(i2*q_scale - i1*k_scale + (kh - 1)*k_scale);
             for (int64_t i0 = 0; i0 < ne0; ++i0) {
-                dst_data[i2*ne1*ne0 + i1*ne0 + i0] = src0_data[pos*ne00 + i0];
+                const float val = *(const float *) (src0_d + pos*nb01 + i0*nb00);
+                *(float *) (dst_d + i2*nb2 + i1*nb1 + i0*nb0) = val;
             }
         }
     }
@@ -9375,14 +9376,15 @@ static void ggml_compute_forward_get_rel_pos_f16(
     const float k_scale = MAX((float)qh / kh, 1.0f);
     const float q_scale = MAX((float)kh / qh, 1.0f);
 
-    ggml_fp16_t * src0_data = (ggml_fp16_t *) src0->data;
-    ggml_fp16_t * dst_data  = (ggml_fp16_t *) dst->data;
+    const char * src0_d = (const char *) src0->data;
+    char *       dst_d  = (char *)       dst->data;
 
     for (int64_t i2 = 0; i2 < ne2; ++i2) {
         for (int64_t i1 = 0; i1 < ne1; ++i1) {
             const int pos = int(i2*q_scale - i1*k_scale + (kh - 1)*k_scale);
             for (int64_t i0 = 0; i0 < ne0; ++i0) {
-                dst_data[i2*ne1*ne0 + i1*ne0 + i0] = src0_data[pos*ne00 + i0];
+                const ggml_fp16_t val = *(const ggml_fp16_t *) (src0_d + pos*nb01 + i0*nb00);
+                *(ggml_fp16_t *) (dst_d + i2*nb2 + i1*nb1 + i0*nb0) = val;
             }
         }
     }

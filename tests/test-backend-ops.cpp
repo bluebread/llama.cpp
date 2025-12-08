@@ -7871,8 +7871,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_get_rel_pos(type, 13, 7, 7, v));
             // Square large: 14x14 attention
             test_cases.emplace_back(new test_get_rel_pos(type, 27, 14, 14, v));
+            // Square large: 16x16 attention
+            test_cases.emplace_back(new test_get_rel_pos(type, 31, 16, 16, v));
             // Rectangular: 14x7 attention
             test_cases.emplace_back(new test_get_rel_pos(type, 27, 14, 7, v));
+            // Rectangular: 7x14 attention
+            test_cases.emplace_back(new test_get_rel_pos(type, 27, 7, 14, v));
+            // Rectangular: 16x8 attention
+            test_cases.emplace_back(new test_get_rel_pos(type, 31, 16, 8, v));
+            // Rectangular: 8x16 attention
+            test_cases.emplace_back(new test_get_rel_pos(type, 31, 8, 16, v));
+            // Rectangular: 28x14 attention
+            test_cases.emplace_back(new test_get_rel_pos(type, 55, 28, 14, v));
+            // Rectangular: 14x28 attention
+            test_cases.emplace_back(new test_get_rel_pos(type, 55, 14, 28, v));
             // Edge case: 1x1 attention (minimum)
             test_cases.emplace_back(new test_get_rel_pos(type, 1, 1, 1, v));
         }

@@ -1,6 +1,7 @@
 #include "common.cuh"
-#include "ggml.h"
+#include "convert.cuh"
 #include "ggml-cuda/win.cuh"
+#include "ggml.h"
 
 /*
 
@@ -28,7 +29,7 @@ static void ggml_compute_forward_win_part_f16(
     for (int64_t i3 = 0; i3 < ne3; i3++) {
         int px = i3 % nep0;
         int py = (i3 / nep0) % nep1;
-        int b  = i3 / (nep0 * nep1); 
+        int b  = i3 / (nep0 * nep1);
         for (int64_t i2 = 0; i2 < ne2; ++i2) {
             for (int64_t i1 = 0; i1 < ne1; ++i1) {
                 for (int64_t i0 = 0; i0 < ne0; ++i0) {
@@ -38,7 +39,7 @@ static void ggml_compute_forward_win_part_f16(
                     const int64_t i00 = i0;
 
                     void * sp = ((void *) src0->data) + i03*nb03 + i02*nb02  + i01*nb01 + i00*nb00;
-                    void * dp = ((void *) dst->data)  + i3*nb3   + i2*nb2    + i1*nb1   + i0*nb0; 
+                    void * dp = ((void *) dst->data)  + i3*nb3   + i2*nb2    + i1*nb1   + i0*nb0;
 
                     if (py*w + i2 >= ne02 || px*w + i1 >= ne01) {
                         *((ggml_fp16_t *) dp) = 0;
@@ -138,7 +139,7 @@ __global__ static void win_part_kernel(
     if (py*p.w + i2 >= p.ne2 || px*p.w + i1 >= p.ne1) {
         for (int i0 = threadIdx.x; i0 < p.C; i0 += blockDim.x) {
             char * dp = (char *)dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0;
-            *((T *) dp) = 0;
+            *((T *) dp) = ggml_cuda_cast<T>(0.0f);
         }
         return;
     }
@@ -210,7 +211,7 @@ static unsigned int round_to_pow2(unsigned int v) {
     v++;
 
     return v;
-} 
+}
 
 void ggml_cuda_op_win_part(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
@@ -297,12 +298,12 @@ static void ggml_compute_forward_win_unpart_f16(
                 for (int64_t i0 = 0; i0 < ne0; ++i0) {
                     const int ip2 = i2/w;
                     const int ip1 = i1/w;
-    
+
                     const int64_t i03 = i3*npx*npy + ip2*npx + ip1;
                     const int64_t i02 = i2%w;
                     const int64_t i01 = i1%w;
                     const int64_t i00 = i0;
-    
+
                     void * sp = ((void *) src0->data) + i03*nb03 + i02*nb02 + i01*nb01 + i00*nb00;
                     void * dp = ((void *) dst->data)  + i3*nb3   + i2*nb2   + i1*nb1   + i0*nb0;
 
