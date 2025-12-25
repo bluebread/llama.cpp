@@ -85,6 +85,7 @@ enum mtmd_slice_tmpl {
     MTMD_SLICE_TMPL_MINICPMV_2_6,
     MTMD_SLICE_TMPL_LLAMA4,
     MTMD_SLICE_TMPL_IDEFICS3,
+    MTMD_SLICE_TMPL_DEEPSEEKOCR,
 };
 
 const char * mtmd_default_marker() {
@@ -312,7 +313,9 @@ struct mtmd_context {
         } else if (proj == PROJECTOR_TYPE_GLM4V) {
             img_beg = "<|begin_of_image|>";
             img_end = "<|end_of_image|>";
-
+        } else if (proj == PROJECTOR_TYPE_DEEPSEEKOCR) {
+            slice_tmpl   = MTMD_SLICE_TMPL_IDEFICS3;
+            ov_img_first = false; // overview image is last
         }
     }
 
@@ -558,6 +561,7 @@ struct mtmd_tokenizer {
                 || ctx->slice_tmpl == MTMD_SLICE_TMPL_MINICPMV_2_6
                 || ctx->slice_tmpl == MTMD_SLICE_TMPL_LLAMA4
                 || ctx->slice_tmpl == MTMD_SLICE_TMPL_IDEFICS3
+                || ctx->slice_tmpl == MTMD_SLICE_TMPL_DEEPSEEKOCR
             ) {
                 const int n_col = batch_f32.grid_x;
                 const int n_row = batch_f32.grid_y;

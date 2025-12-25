@@ -2887,59 +2887,6 @@ private:
     }
 };
 
-static std::vector<std::pair<int, int>> ds_build_target_ratios(const int min_num, const int max_num) {
-    std::vector<std::pair<int, int>> ratios;
-    for (int n = min_num; n <= max_num; ++n) {
-        for (int i = 1; i <= n; ++i) {
-            for (int j = 1; j <= n; ++j) {
-                if (const int blocks = i * j; blocks >= min_num && blocks <= max_num) {
-                    ratios.emplace_back(i, j); // (cols, rows)
-                }
-            }
-        }
-    }
-
-    // sort by total blocks like in Python (key=lambda x: x[0] * x[1])
-    std::sort(ratios.begin(), ratios.end(),
-              [](const auto &a, const auto &b) {
-                  return (a.first * a.second) < (b.first * b.second);
-              });
-
-    // optional: dedup
-    ratios.erase(std::unique(ratios.begin(), ratios.end()), ratios.end());
-    return ratios;
-}
-
-static std::pair<int, int> ds_find_closest_ratio(
-    const float aspect_ratio,
-    const std::vector<std::pair<int, int>> &target_ratios,
-    const int width,
-    const int height,
-    const int image_size
-) {
-    float best_diff = std::numeric_limits<float>::infinity();
-    std::pair<int, int> best_ratio = {1, 1};
-    const float area = static_cast<float>(width) * static_cast<float>(height);
-
-    for (const auto &r : target_ratios) {
-        const float target_ar = static_cast<float>(r.first) / static_cast<float>(r.second);
-
-        if (const float diff = std::fabs(aspect_ratio - target_ar); diff < best_diff) {
-            best_diff = diff;
-            best_ratio = r;
-        } else if (diff == best_diff) {
-            // same as python: prefer this ratio if the image area is “large enough”
-            if (const float needed_area = 0.5f * image_size * image_size * r.first * r.second; area > needed_area) {
-                best_ratio = r;
-            }
-        }
-    }
-
-    return best_ratio; // (cols, rows)
-}
-
-
-
 // returns the normalized float tensor for llava-1.5, for spatial_unpad with anyres processing for llava-1.6 it returns the normalized image patch tensors as a vector
 // res_imgs memory is being allocated here, previous allocations will be freed if found
 bool clip_image_preprocess(struct clip_ctx * ctx, const clip_image_u8 * img, struct clip_image_f32_batch * res_imgs) {
@@ -3159,85 +3106,145 @@ bool clip_image_preprocess(struct clip_ctx * ctx, const clip_image_u8 * img, str
         case PROJECTOR_TYPE_DEEPSEEKOCR:
             {
                 const std::vector native_resolutions = {
-                    /*512 tiny , 640 small, */ 1024 /* base */, 1280 /* large */
+                    /* 512 tiny , 640 small, */ 1024 /* base */, 1280 /* large */
                 };
-                // original image size
                 const int orig_w = original_size.width;
                 const int orig_h = original_size.height;
                 const int orig_area = orig_h * orig_w;
-                std::array<uint8_t, 3u> color;
+                const int max_size = 1280;
+                const unsigned char pad_r = static_cast<unsigned char>(params.image_mean[0] * 255.0f);
+                const unsigned char pad_g = static_cast<unsigned char>(params.image_mean[1] * 255.0f);
+                const unsigned char pad_b = static_cast<unsigned char>(params.image_mean[2] * 255.0f);
 
-                for (int i = 0; i < 3; i++) {
-                    color[i] = (int)(255 * params.image_mean[i]);
-                }
+                int ov_image_size = -1;
+                int tile_size = -1;
+                bool crop_mode = (orig_area > 2.0f * max_size * max_size);
 
-                size_t mode_i = 0;
-                int min_diff = orig_area;
+                // Auto mode selection logic
+                if (crop_mode) {
+                    if (orig_area <= 6.0f * max_size * max_size) {
+                        ov_image_size = 1024; // Gundam Mode
+                        tile_size = 640;
+                    } else {
+                        ov_image_size = 1024; // Gundam-Master Mode
+                        tile_size = 640;
+                    }
+                } else {
+                    int min_diff = orig_area;
 
-                for (size_t i = 0; i < native_resolutions.size(); i++) {
-                    int r = native_resolutions[i];
-                    if (std::abs(orig_area - r * r) < min_diff) {
-                        mode_i = i;
-                        min_diff = std::abs(orig_area - r * r);
+                    for (size_t i = 0; i < native_resolutions.size(); i++) {
+                        int r = native_resolutions[i];
+                        if (std::abs(orig_area - r * r) < min_diff) {
+                            ov_image_size = native_resolutions[i];
+                            min_diff = std::abs(orig_area - r * r);
+                        }
                     }
                 }
 
-                /* Native Resolution (Base/Large) */
-                const int image_size = native_resolutions[mode_i];
+                const char * mode_name;
 
-                // Resize maintaining aspect ratio, then pad to square
-                float scale = std::min(
-                    static_cast<float>(image_size) / orig_w,
-                    static_cast<float>(image_size) / orig_h
-                );
-                int new_w = static_cast<int>(orig_w * scale);
-                int new_h = static_cast<int>(orig_h * scale);
-
-                clip_image_u8_ptr scaled_img(clip_image_u8_init());
-                img_tool::resize(*img, *scaled_img, clip_image_size{new_w, new_h},
-                                img_tool::RESIZE_ALGO_BICUBIC_PILLOW, true, color);
-
-                // Use mean color for padding
-                unsigned char pad_r = static_cast<unsigned char>(params.image_mean[0] * 255.0f);
-                unsigned char pad_g = static_cast<unsigned char>(params.image_mean[1] * 255.0f);
-                unsigned char pad_b = static_cast<unsigned char>(params.image_mean[2] * 255.0f);
-
-                // Pad to image_size × image_size (center padding)
-                clip_image_u8_ptr padded_img(clip_image_u8_init());
-                padded_img->nx = image_size;
-                padded_img->ny = image_size;
-                padded_img->buf.resize(image_size * image_size * 3); // black padding
-
-                // Fill with mean color
-                for (int i = 0; i < image_size * image_size; ++i)
+                switch (ov_image_size)
                 {
-                    padded_img->buf[i * 3 + 0] = pad_r;
-                    padded_img->buf[i * 3 + 1] = pad_g;
-                    padded_img->buf[i * 3 + 2] = pad_b;
+                case 512: mode_name = "Tiny";  break;
+                case 640: mode_name = "Small";  break;
+                case 1024: mode_name = (tile_size < 0) ? "Base" : "Gundam";  break;
+                case 1280: mode_name = (tile_size < 0) ? "Large" : "Gundam-Master";  break;
+                
+                default:
+                    LOG_ERR("%s: failed to determine DeepSeek-OCR mode\n", __func__);
+                    return false;
                 }
 
-                // Calculate padding offsets (center the image)
-                int pad_x = (image_size - new_w) / 2;
-                int pad_y = (image_size - new_h) / 2;
+                LOG_INF("%s: DeepSeek-OCR %s mode\n", __func__, mode_name);
+                
+                if (crop_mode) {
+                    /* Dynamic Resolution (Gundam/Gundam-Master) */
 
-                // Copy scaled image into padded canvas
-                for (int y = 0; y < new_h; ++y){
-                    for (int x = 0; x < new_w; ++x){
-                        int src_idx = (y * new_w + x) * 3;
-                        int dst_idx = ((y + pad_y) * image_size + (x + pad_x)) * 3;
-                        padded_img->buf[dst_idx + 0] = scaled_img->buf[src_idx + 0];
-                        padded_img->buf[dst_idx + 1] = scaled_img->buf[src_idx + 1];
-                        padded_img->buf[dst_idx + 2] = scaled_img->buf[src_idx + 2];
+                    // Precomputed target aspect ratios for dynamic tiling
+                    // These ratios (width, height) define valid grid layouts from 2-9 tiles
+                    static constexpr std::array<std::pair<int, int>, 22> target_ratios = {{
+                        {3, 1}, {5, 1}, {2, 2}, {1, 6}, {1, 3}, {1, 9}, {7, 1}, {4, 2},
+                        {3, 3}, {9, 1}, {2, 4}, {1, 2}, {2, 1}, {1, 5}, {6, 1}, {1, 8},
+                        {3, 2}, {4, 1}, {8, 1}, {1, 4}, {2, 3}, {1, 7}
+                    }};
+
+                    const float aspect_ratio = (float)orig_w / (float)orig_h;
+                    const float area = (float)orig_w * (float)orig_h;
+
+                    // Find the grid layout that best matches the image aspect ratio
+                    float best_diff = std::numeric_limits<float>::infinity();
+                    std::pair<int, int> best_ratio = {1, 1};
+
+                    for (const auto & [rw, rh] : target_ratios) {
+                        const float target_aspect_ratio = static_cast<float>(rw) / static_cast<float>(rh);
+
+                        if (const float diff = std::fabs(aspect_ratio - target_aspect_ratio); diff < best_diff) {
+                            best_diff = diff;
+                            best_ratio = { rw, rh };
+                        } else if (diff == best_diff) {
+                            if (area > 0.5f * tile_size * tile_size * rw * rh) {
+                                best_ratio = { rw, rh };
+                            }
+                        }
                     }
+
+                    const auto & [best_rw, best_rh] = best_ratio;
+
+                    // Generate slice coordinates for the chosen grid layout
+                    // Slices are generated in row-major order (left-to-right, top-to-bottom)
+                    std::vector<llava_uhd::slice_coordinates> slices;
+
+                    for (int j = 0; j < best_rh; j++) {
+                        for (int i = 0; i < best_rw; i++) {
+                            slices.emplace_back(llava_uhd::slice_coordinates{
+                                 /* x */    i * tile_size,
+                                 /* y */    j * tile_size,
+                                 /* size */ { tile_size, tile_size },
+                            });
+                        }
+                    }
+
+                    // Prepare instructions for image slicing
+                    const struct llava_uhd::slice_instructions inst = {
+                        /* overview_size */          { ov_image_size, ov_image_size },
+                        /* refined_size */           { tile_size * best_rw, tile_size * best_rh },
+                        /* grid_size */              { best_rw, best_rh },
+                        /* slices */                 std::move(slices),
+                        /* interpolation_overview */ img_tool::RESIZE_ALGO_BICUBIC_PILLOW,
+                        /* padding_overview */       true,
+                        /* pad_color_overview */     { pad_r, pad_g, pad_b },
+                        /* interpolation_refined */  img_tool::RESIZE_ALGO_BICUBIC_PILLOW,
+                        /* padding_refined */        false,  // No padding needed, exact grid dimensions
+                        /* pad_color_refined */      { 0, 0, 0 },
+                    };
+
+                    // Process image: returns [overview, tile1, tile2, ..., tileN]
+                    const std::vector<clip_image_u8_ptr> imgs = llava_uhd::slice_image(img, inst);
+
+                    // Normalize all images (overview + tiles) to f32 format
+                    for (size_t i = 0; i < imgs.size(); ++i) {
+                        clip_image_f32_ptr res(clip_image_f32_init());
+                        normalize_image_u8_to_f32(*imgs[i], *res, params.image_mean, params.image_std);
+                        res_imgs->entries.push_back(std::move(res));
+                    }
+
+                    // Store grid dimensions for later use by the model
+                    res_imgs->grid_x = best_rw;
+                    res_imgs->grid_y = best_rh;
+                    
+                } else {
+                    /* Native Resolution (Base/Large) */
+                    clip_image_u8_ptr scaled_img(clip_image_u8_init());
+                    img_tool::resize(*img, *scaled_img, clip_image_size{ov_image_size, ov_image_size},
+                                    img_tool::RESIZE_ALGO_BICUBIC_PILLOW, true, { pad_r, pad_g, pad_b });
+    
+                    clip_image_f32_ptr res(clip_image_f32_init());
+                    normalize_image_u8_to_f32(*scaled_img, *res, params.image_mean, params.image_std);
+                    
+                    res_imgs->entries.push_back(std::move(res));
+                    res_imgs->grid_x = 1;
+                    res_imgs->grid_y = 1;
                 }
-
-                // Normalize and output
-                clip_image_f32_ptr res(clip_image_f32_init());
-                normalize_image_u8_to_f32(*padded_img, *res, params.image_mean, params.image_std);
-                res_imgs->entries.push_back(std::move(res));
-
-                res_imgs->grid_x = 1;
-                res_imgs->grid_y = 1;
             } break;
 
         default:
